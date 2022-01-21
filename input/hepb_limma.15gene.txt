@@ -1,0 +1,16 @@
+merck-DB350188_a_at
+merck-NM_005143_s_at
+merck-CR593799_s_at
+merck-ENST00000341460_at
+merck-CR617832_a_at
+merck-ENST00000378777_x_at
+merck-AK023762_at
+merck-ENST00000335534_s_at
+merck2-CD517359_a_at
+merck2-AK093024_at
+merck-BX537613_at
+merck-ENST00000372057_s_at
+merck2-NM_152867_a_at
+merck-NM_014399_at
+merck2-BC031039_at
+
