@@ -1,0 +1,202 @@
+---
+title: "EM131 Table1"
+author: "Slim FOURATI"
+date: "07/03/2013"
+output: github_document
+---
+
+```{r loading-packages}
+suppressPackageStartupMessages(library(package = "knitr"))
+
+  suppressPackageStartupMessages(library(package = "gdata"))
+  suppressPackageStartupMessages(library(package = "ggplot2"))
+  suppressPackageStartupMessages(library(package = "reshape"))
+  suppressPackageStartupMessages(library(package = "gridExtra"))
+  suppressPackageStartupMessages(library(package = "ROCR"))
+  suppressPackageStartupMessages(library(package = "readxl"))
+```
+
+```{r global-variables}
+knitr::opts_chunk$set(echo = TRUE) # do not echo chunks
+opts_chunk$set(tidy = FALSE, fig.path = "../figure/")
+options(dplyr.summarise.inform = FALSE)
+workDir <- dirname(getwd())
+```
+
+reading flow data
+```{r}
+fileName <- "20130212_MK131_Flow.xlsx"
+fileName <- file.path(workDir, "input", fileName)
+  nbSheet <- excel_sheets(path = fileName)
+  flowLS <- lapply(nbSheet, FUN = function(x) {
+    flowDF <- read_excel(path        = fileName,
+                            sheet       = x)
+    flowDF <- as.data.frame(flowDF)
+  })
+  names(flowLS) <- gsub(pattern     = " ",
+                        replacement = "_",
+                        nbSheet)
+  flowLS <- lapply(flowLS, FUN = function(x) {
+    rownames(x) <- apply(x[, c("Subject ID", "Visit")],
+                         MARGIN   = 1,
+                         FUN      = paste,
+                         collapse = "_")
+    rownames(x) <- paste("NIML", rownames(x), sep = "_")
+    return(value = x)
+  })
+  rowNames <- rownames(flowLS[[1]])
+  flowLS <- lapply(flowLS, FUN = function(x) {
+    return(value = x[rowNames, ])
+  })
+                                        # boolean table exclude from analysis
+  flowLS <- flowLS[!grepl(pattern = "boolean", names(flowLS))]
+                                        # clean up
+  cat("removing technical replicates...")
+  flowLS <- lapply(flowLS, FUN = function(x) {
+    return(value = x[!grepl(pattern = "_B$", rownames(x)), ])
+  })
+                                        # creating one data frame for all the FACS measures
+  flowDF <- lapply(flowLS, FUN = function(x) {
+    return(value = x[, -(1:6)])
+  })
+  flowDF <- do.call(what = cbind, args = flowDF)
+```
+reading sample annotation
+```{r}
+  sampleAnnotFile <- "titers.txt"
+  sampleAnnot <- read.table(file        = file.path(workDir, "input",
+                                sampleAnnotFile),
+                            check.names = FALSE,
+                            sep         = "\t",
+                            header      = TRUE)
+  # remove empty row/column
+  rowNA <- apply(sampleAnnot,
+                 MARGIN = 1,
+                 FUN    = function(x) all(is.na(x) | x %in% ""))
+  colNA <- apply(sampleAnnot,
+                 MARGIN = 2,
+                 FUN   = function(x) all(is.na(x) | x %in% ""))
+  sampleAnnot <- sampleAnnot[!rowNA, !colNA]
+  rownames(sampleAnnot) <- apply(sampleAnnot[,c("Subject ID", "Visit ID")],
+                                 MARGIN   = 1,
+                                 FUN      = paste,
+                                 collapse = "_")
+  rownames(sampleAnnot) <- paste("NIML", rownames(sampleAnnot), sep = "_")
+```
+
+reformating  titers
+```{r}
+  hepbCon <- as.numeric(gsub(pattern     = "<",
+                             replacement = "",
+                             sampleAnnot[, 13]))
+  hepbCon[grepl(pattern = "<", sampleAnnot[, 13])] <-
+    hepbCon[grepl(pattern = "<", sampleAnnot[, 13])]/2
+  hepbCon <- log(hepbCon)
+  hepbDif <- hepbCon[349:522] - hepbCon[1:174]
+  # mask patients w/ high basal hepatitis B titer
+  hepbDif[hepbCon[1:174] > min(hepbCon[1:174])] <- NA
+  sampleAnnot <- cbind(sampleAnnot,
+                       hepbCon,
+                       hepbDif = rep(hepbDif, times =3))
+```
+
+splitting dataset into training and test set
+```{r}
+  # splitting training and test set
+  fileName <- "20120924_Merck.randomization.listPatientID.txt"
+  splitLS <- read.table(file = file.path(workDir, "input", fileName),
+                        sep = "\t", row.names = 1)
+  splitLS <- apply(splitLS,
+                   MARGIN = 1,
+                   FUN    = function(x) {
+                     unname(unlist(strsplit(x, split = ",")))
+                   })
+  # assessing association btw flow markers and hepB classes
+  ptsID <- strsplit(rownames(flowDF), split = "_")
+  ptsID <- do.call(what = rbind, args = ptsID)[, 2]
+  trainID <- which(ptsID %in% splitLS$"training" &
+                   grepl(pattern = "V2", rownames(flowDF)))
+  trainID <- rownames(flowDF)[trainID]
+  testID <- which(ptsID %in% splitLS$"test" &
+                  grepl(pattern = "V2", rownames(flowDF)))
+  testID <- rownames(flowDF)[testID]
+```
+
+assessing association w/ response to vaccine
+```{r}
+inputDF <- flowDF[trainID, ]
+  # determine which varaibles are categorical variable
+  isCateg <- apply(inputDF, MARGIN = 2, FUN = function(x) {
+    maxFreq <- sort(table(x), decreasing = TRUE)[1]
+    return(value = maxFreq > sum(!is.na(x)) * 0.25)
+  })
+  isCont <- which(!isCateg)
+  isCateg <- which(isCateg)
+
+
+# for hepatitis B and cholera
+y <- factor(as.numeric(sampleAnnot[trainID, "hepbDif"] == 0))
+
+
+  # for hepatitis B and cholera
+  # perform fisher exact test for categorical variables
+  pCateg <- list()
+  for(i in isCateg) {
+    tab <- sort(table(inputDF[, i]), decreasing = TRUE)
+    yhat <- factor(inputDF[, i] > as.numeric(names(tab))[1])
+    if (nlevels(y) > 1) {
+      fit <- fisher.test(yhat, y)
+      pCateg <- c(pCateg, signif(fit$p, digits = 3))
+    } else {
+      pCateg <- c(pCateg, NA)
+    }
+    names(pCateg)[length(pCateg)] <- colnames(inputDF)[i]
+  }
+  sigCateg <- which(p.adjust(unlist(pCateg), method = "none") <= 0.05)
+```
+
+perform logistic regression for continuous variables
+```{r}
+  pCont <- list()
+  coefCont <- list()
+  for (i in isCont) {
+    if (is.numeric(inputDF[, i])) {
+      yhat <- inputDF[, i]
+      fit <- glm(formula = y ~ yhat, family = binomial("logit"))
+      pVal <- summary(fit)$coefficients["yhat", "Pr(>|z|)"]
+      pCont <- c(pCont, signif(pVal, digits = 3))
+      coefCont <- c(coefCont, list(exp(c(coef(fit)["yhat"],
+                                             confint(fit)["yhat", ]))))
+    } else {
+      pCont <- c(pCont, NA)
+      coefCont <- c(coefCont, NA)
+    }
+    names(pCont)[length(pCont)] <- colnames(inputDF)[i]
+    names(coefCont)[length(coefCont)] <- colnames(inputDF)[i]
+  }
+  sigCont <- which(p.adjust(unlist(pCont), method = "none") <= 0.1)
+  # mutlivariate analysis with significant univariate markers
+  # create variable
+  sigCont <- sigCont[order(as.numeric(pCont[sigCont]))]
+  for (i in 1:length(sigCont)) {
+    eval(parse(text = paste("yhat",
+                            i,
+                            " <- inputDF[, names(sigCont)[",
+                            i,
+                            "]]",
+                            sep = "")))
+  }
+  f <- paste("yhat", 1:length(sigCont), sep = "")
+  f <- paste(f, collapse = " + ")
+  f <- paste("y ~", f)
+  fit <- glm(formula = eval(parse(text = f)), family = binomial("logit"))
+  multiCont <- summary(fit)$coefficients[-1, "Pr(>|z|)"]
+  multiCont <- signif(multiCont, digits = 3)
+  names(multiCont) <- names(sigCont)[1:length(multiCont) %in%
+                                     gsub(pattern     = "yhat",
+                                          replacement = "",
+                                          names(multiCont))]
+  coefCont <- exp(cbind(coef(fit), confint(fit)))[-1, ]
+  rownames(coefCont) <- names(sigCont)
+```
+
